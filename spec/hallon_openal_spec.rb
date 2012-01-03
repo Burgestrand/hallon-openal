@@ -44,4 +44,12 @@ describe Hallon::OpenAL do
       subject.drops.should be_zero
     end
   end
+
+  describe "#format" do
+    it "should be settable and gettable" do
+      subject.format.should be_nil
+      subject.format = format
+      subject.format.should eq format
+    end
+  end
 end
