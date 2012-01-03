@@ -164,7 +164,7 @@ static VALUE oa_drops(VALUE self)
 
 static VALUE oa_set_format(VALUE self, VALUE format)
 {
-  rb_raise(rb_eNotImpError, "#format= is not yet implemented");
+  // rb_raise(rb_eNotImpError, "#format= is not yet implemented");
   return format;
 }
 
