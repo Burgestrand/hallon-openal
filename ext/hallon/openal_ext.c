@@ -19,6 +19,7 @@
 typedef struct
 {
   ALCdevice  *device;
+  ALCcontext *context;
   ALuint buffers[NUM_BUFFERS];
   ALuint source;
 } oa_struct_t;
@@ -26,8 +27,33 @@ typedef struct
 // Globals
 ID oa_iv_block;
 
-static VALUE oa_free(int *device)
+static void oa_free(oa_struct_t *data_ptr)
 {
+  int i;
+
+  // exit early if we have no data_ptr at all
+  if ( ! data_ptr) return;
+
+  // deleting a source stops it from playing and
+  // then destroys it
+  if (data_ptr->source)
+    alDeleteSources(1, &data_ptr->source);
+
+  // now that the source is gone, we can safely delete buffers
+  if (data_ptr->buffers[0])
+    alDeleteBuffers(NUM_BUFFERS, data_ptr->buffers);
+
+  // docs tell us to do this to make sure
+  // our source is not the current one
+  alcMakeContextCurrent(NULL);
+
+  if (data_ptr->context)
+    alcDestroyContext(data_ptr->context);
+
+  if (data_ptr->device)
+    alcCloseDevice(data_ptr->device);
+
+  xfree(data_ptr);
 }
 
 static VALUE oa_allocate(VALUE klass)
@@ -39,6 +65,8 @@ static VALUE oa_allocate(VALUE klass)
 static VALUE oa_initialize(int argc, VALUE *argv, VALUE self)
 {
   VALUE format, block;
+  oa_struct_t *data_ptr;
+  ALenum error = AL_NO_ERROR;
 
   rb_scan_args(argc, argv, "1&", &format, &block);
 
@@ -52,7 +80,6 @@ static VALUE oa_initialize(int argc, VALUE *argv, VALUE self)
   // receive audio frames; so we store it
   rb_ivar_set(self, oa_iv_block, block);
 
-  oa_struct_t *data_ptr;
   Data_Get_Struct(self, oa_struct_t, data_ptr);
 
   data_ptr->device = alcOpenDevice(NULL);
@@ -61,17 +88,16 @@ static VALUE oa_initialize(int argc, VALUE *argv, VALUE self)
     rb_raise(rb_eRuntimeError, "failed to open device");
   }
 
-  ALCcontext *context = alcCreateContext(data_ptr->device, NULL);
-  if ( ! context)
+  data_ptr->context = alcCreateContext(data_ptr->device, NULL);
+  if ( ! data_ptr->context)
   {
     rb_raise(rb_eRuntimeError, "failed to create context");
   }
 
   // reset error state
-  ALenum error = AL_NO_ERROR;
   alGetError();
 
-  alcMakeContextCurrent(context);
+  alcMakeContextCurrent(data_ptr->context);
   OA_CHECK_ERRORS;
 
   // Set some defualt properties
@@ -90,10 +116,10 @@ static VALUE oa_initialize(int argc, VALUE *argv, VALUE self)
 
 void Init_openal_ext(void)
 {
-  oa_iv_block = rb_intern("@block");
-
   VALUE mHallon = rb_const_get(rb_cObject, rb_intern("Hallon"));
   VALUE cOpenAL = rb_define_class_under(mHallon, "OpenAL", rb_cObject);
+
+  oa_iv_block = rb_intern("@block");
 
   rb_define_alloc_func(cOpenAL, oa_allocate);
   rb_define_method(cOpenAL, "initialize", oa_initialize, -1);
