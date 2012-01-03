@@ -4,6 +4,8 @@ def error(message)
   abort "[ERROR] #{message}"
 end
 
+$CFLAGS << ' -ggdb -O0 -Wextra'
+
 error 'Missing ruby header' unless have_header 'ruby.h'
 error 'Missing OpenAL/alc.h' unless have_header 'OpenAL/alc.h'
 error 'Missing OpenAL/al.h' unless have_header 'OpenAL/al.h'

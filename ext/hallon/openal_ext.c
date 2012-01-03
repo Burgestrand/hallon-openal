@@ -13,6 +13,7 @@ ID oa_iv_thread;
 ID oa_id_call;
 ID oa_id_kill;
 ID oa_id_kill_thread;
+ID oa_id_spawn_thread;
 
 // struct information stored
 // with the OpenAL driver instance
@@ -26,11 +27,11 @@ typedef struct
 
 // Utility
 
-#define OA_CHECK_ERRORS do {                                \
+#define OA_CHECK_ERRORS(msg) do {                           \
   ALenum _error;                                            \
   if ((_error = alGetError()) != AL_NO_ERROR)               \
   {                                                         \
-    rb_raise(rb_eRuntimeError, "OpenAL error: %d", _error); \
+    rb_raise(rb_eRuntimeError, "OpenAL error: %u (%s)", _error, (msg)); \
   }                                                         \
 } while(0)
 
@@ -120,40 +121,43 @@ static VALUE oa_initialize(int argc, VALUE *argv, VALUE self)
   alGetError();
 
   alcMakeContextCurrent(data_ptr->context);
-  OA_CHECK_ERRORS;
+  OA_CHECK_ERRORS("context current");
 
   // Set some defualt properties
   alListenerf(AL_GAIN, 1.0f);
 	alDistanceModel(AL_NONE);
-  OA_CHECK_ERRORS;
+  OA_CHECK_ERRORS("listener/distance");
 
   // generate some buffers
 	alGenBuffers((ALsizei)NUM_BUFFERS, data_ptr->buffers);
-  OA_CHECK_ERRORS;
+  OA_CHECK_ERRORS("generate buffers");
 
   // generate our source
 	alGenSources(1, &data_ptr->source);
-  OA_CHECK_ERRORS;
+  OA_CHECK_ERRORS("gen sources");
+
+  // spawn thread
+  rb_funcall(self, oa_id_spawn_thread, 0);
 }
 
 static VALUE oa_start(VALUE self)
 {
   alSourcePlay(oa_struct(self)->source);
-  OA_CHECK_ERRORS;
+  OA_CHECK_ERRORS("play!");
   return self;
 }
 
 static VALUE oa_stop(VALUE self)
 {
   alSourceStop(oa_struct(self)->source);
-  OA_CHECK_ERRORS;
+  OA_CHECK_ERRORS("stop!");
   return self;
 }
 
 static VALUE oa_pause(VALUE self)
 {
   alSourcePause(oa_struct(self)->source);
-  OA_CHECK_ERRORS;
+  OA_CHECK_ERRORS("pause!");
   return self;
 }
 
@@ -190,6 +194,7 @@ typedef struct
 {
   ALuint source;
   int abort;
+  int init;
 } oa_wait_t;
 
 static VALUE wait_for_empty_buffer(void *wait_ptr)
@@ -216,37 +221,51 @@ static void abort_wait_for_empty_buffer(void *wait_ptr)
 
 static VALUE oa_thread_loop(void *id_self)
 {
-  const int frames_per_buffer = 22000;
-  VALUE self  = (VALUE)id_self;
-  VALUE block = rb_ivar_get(self, oa_iv_block);
-  VALUE result = Qnil;
+  const int max_frames_per_buffer = 22000;
+  VALUE self     = (VALUE)id_self;
+  ALuint buffer  = Qnil;
+  int num_queued = 0;
 
   oa_struct_t *data_ptr = oa_struct(self);
 
   oa_wait_t wait =
   {
     .source = data_ptr->source,
-    .abort  = 0
+    .abort  = 0,
   };
 
   while ( ! wait.abort)
   {
-    result = rb_thread_blocking_region(wait_for_empty_buffer, &wait, abort_wait_for_empty_buffer, &wait);
+    alGetSourcei(wait.source, AL_BUFFERS_QUEUED, &num_queued);
+
+    // in the start, for example, we won’t have queued any buffers
+    // so we need to do that before we can wait for an empty buffer
+    if (num_queued != NUM_BUFFERS)
+    {
+      printf("num queued: %d\n", num_queued);
+      buffer = data_ptr->buffers[num_queued];
+    }
+    else
+    {
+      buffer = (ALuint) rb_thread_blocking_region(wait_for_empty_buffer, &wait, abort_wait_for_empty_buffer, &wait);
+    }
+
     if ( ! wait.abort)
     {
       // check for errors, just to be safe
-      OA_CHECK_ERRORS;
+      OA_CHECK_ERRORS("paranoia");
 
       // read the format
-      int channels  = 2;
-      int sample_rate = 441000;
+      int channels    = 2;
+      int sample_rate = 44100;
       int format_size = sizeof(short);
 
       // pull 22,000 frames from Hallon; each frame is an array
       // of `channels` items, OpenAL wants it as a single array
-      int num_samples = frames_per_buffer * channels;
-      unsigned short samples[num_samples];
-      VALUE frames = oa_get_audio(self, 22000);
+      int max_samples = max_frames_per_buffer * channels;
+      signed short samples[max_samples];
+      VALUE frames = oa_get_audio(self, max_frames_per_buffer);
+      long num_samples = RARRAY_LEN(frames) * channels;
 
       VALUE frame, sample;
       int i, rb_i, rb_j;
@@ -258,19 +277,24 @@ static VALUE oa_thread_loop(void *id_self)
         frame  = RARRAY_PTR(frames)[rb_i];
         sample = RARRAY_PTR(frame)[rb_j];
 
-        unsigned long value = FIX2LONG(sample);
+        long value = FIX2LONG(sample);
 
-        samples[i] = value & 0xFFFF; // shorts are 16 bits
+        samples[i] = (short) value; // shorts are 16 bits
       }
 
+      printf("buffered: %ld", num_samples);
+
       // pucker up all the params
-      ALuint buffer = (ALuint)result;
       ALenum format = channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
-      ALsizei size  = sizeof(samples);
+      ALsizei size  = sizeof(short) * num_samples;
       ALsizei freq  = sample_rate;
 
       // queue the data!
       alBufferData(buffer, format, samples, size, sample_rate);
+      OA_CHECK_ERRORS("buffer data");
+
+      alSourceQueueBuffers(wait.source, 1, &buffer);
+      OA_CHECK_ERRORS("queue a buffer");
     }
   }
 
@@ -300,6 +324,7 @@ void Init_openal_ext(void)
   oa_id_call   = rb_intern("call");
   oa_id_kill   = rb_intern("kill");
   oa_id_kill_thread = rb_intern("kill_thread");
+  oa_id_spawn_thread = rb_intern("spawn_thread");
 
   rb_define_alloc_func(cOpenAL, oa_allocate);
   rb_define_method(cOpenAL, "initialize", oa_initialize, -1);
