@@ -10,7 +10,8 @@ Gem::Specification.new do |gem|
 
   gem.files         = `git ls-files`.split("\n")
   gem.test_files    = `git ls-files -- {test,spec,features}/*`.split("\n")
-  gem.require_paths = ["lib", "ext/hallon"]
+  gem.require_paths = ["lib", "ext"]
+  gem.extensions    = ["ext/hallon/extconf.rb"]
   gem.version       = Hallon::OpenAL::VERSION
 
   gem.add_dependency 'hallon', '~> 0.12'
