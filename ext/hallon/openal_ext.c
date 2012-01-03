@@ -2,15 +2,6 @@
 #include <OpenAL/alc.h>
 #include <OpenAL/al.h>
 
-// Macros
-
-#define OA_CHECK_ERRORS do {                                 \
-  if ((error = alGetError()) != AL_NO_ERROR)                \
-  {                                                         \
-    rb_raise(rb_eRuntimeError, "OpenAL error: %d", error);  \
-  }                                                         \
-} while(0)
-
 // How many audio buffers to keep
 #define NUM_BUFFERS 3
 
@@ -23,6 +14,23 @@ typedef struct
   ALuint buffers[NUM_BUFFERS];
   ALuint source;
 } oa_struct_t;
+
+// Utility
+
+#define OA_CHECK_ERRORS do {                                \
+  ALenum _error;                                            \
+  if ((_error = alGetError()) != AL_NO_ERROR)               \
+  {                                                         \
+    rb_raise(rb_eRuntimeError, "OpenAL error: %d", _error); \
+  }                                                         \
+} while(0)
+
+static inline oa_struct_t* oa_struct(VALUE self)
+{
+  oa_struct_t *data_ptr;
+  Data_Get_Struct(self, oa_struct_t, data_ptr);
+  return data_ptr;
+}
 
 // Globals
 ID oa_iv_block;
@@ -114,6 +122,32 @@ static VALUE oa_initialize(int argc, VALUE *argv, VALUE self)
   OA_CHECK_ERRORS;
 }
 
+static VALUE oa_start(VALUE self)
+{
+  alSourcePlay(oa_struct(self)->source);
+  OA_CHECK_ERRORS;
+  return self;
+}
+
+static VALUE oa_stop(VALUE self)
+{
+  alSourceStop(oa_struct(self)->source);
+  OA_CHECK_ERRORS;
+  return self;
+}
+
+static VALUE oa_pause(VALUE self)
+{
+  alSourcePause(oa_struct(self)->source);
+  OA_CHECK_ERRORS;
+  return self;
+}
+
+static VALUE oa_drops(VALUE self)
+{
+  return INT2NUM(0);
+}
+
 void Init_openal_ext(void)
 {
   VALUE mHallon = rb_const_get(rb_cObject, rb_intern("Hallon"));
@@ -123,4 +157,8 @@ void Init_openal_ext(void)
 
   rb_define_alloc_func(cOpenAL, oa_allocate);
   rb_define_method(cOpenAL, "initialize", oa_initialize, -1);
+  rb_define_method(cOpenAL, "start", oa_start, 0);
+  rb_define_method(cOpenAL, "stop", oa_stop, 0);
+  rb_define_method(cOpenAL, "pause", oa_pause, 0);
+  rb_define_method(cOpenAL, "drops", oa_drops, 0);
 }
