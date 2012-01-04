@@ -3,6 +3,12 @@
 #include <OpenAL/al.h>
 #include <unistd.h>
 
+#if DEBUG_H
+#  define DEBUG printf
+#else
+#  define DEBUG //
+#endif
+
 // How many audio buffers to keep
 #define NUM_BUFFERS 3
 
@@ -10,6 +16,7 @@
 ID oa_iv_block;
 ID oa_iv_format;
 ID oa_iv_thread;
+ID oa_iv_playing;
 ID oa_id_call;
 ID oa_id_kill;
 ID oa_id_kill_thread;
@@ -142,13 +149,14 @@ static VALUE oa_initialize(int argc, VALUE *argv, VALUE self)
 
 static VALUE oa_start(VALUE self)
 {
+  rb_ivar_set(self, oa_iv_playing, Qtrue);
   alSourcePlay(oa_struct(self)->source);
-  OA_CHECK_ERRORS("play!");
   return self;
 }
 
 static VALUE oa_stop(VALUE self)
 {
+  rb_ivar_set(self, oa_iv_playing, Qfalse);
   alSourceStop(oa_struct(self)->source);
   OA_CHECK_ERRORS("stop!");
   return self;
@@ -156,6 +164,7 @@ static VALUE oa_stop(VALUE self)
 
 static VALUE oa_pause(VALUE self)
 {
+  rb_ivar_set(self, oa_iv_playing, Qfalse);
   alSourcePause(oa_struct(self)->source);
   OA_CHECK_ERRORS("pause!");
   return self;
@@ -207,7 +216,6 @@ static ALuint find_empty_buffer(VALUE self)
   }
   else
   {
-    ALint state;
     int processed;
     struct timeval poll_time;
     poll_time.tv_sec  = 0;
@@ -215,11 +223,6 @@ static ALuint find_empty_buffer(VALUE self)
 
     for (processed = 0; processed == 0; rb_thread_wait_for(poll_time))
     {
-      alGetSourcei(source, AL_SOURCE_STATE, &state);
-      OA_CHECK_ERRORS("AL_SOURCE_STATE");
-
-      if (state != AL_PLAYING) continue;
-
       alGetSourcei(source, AL_BUFFERS_PROCESSED, &processed);
       OA_CHECK_ERRORS("AL_BUFFERS_PROCESSED");
     }
@@ -270,7 +273,7 @@ static VALUE oa_thread_loop(void *id_self)
       samples[i] = (short) value; // shorts are 16 bits
     }
 
-    printf("%d +%ld\n", buffer, num_samples);
+    DEBUG("%d +%ld\n", buffer, num_samples);
 
     // pucker up all the params
     ALenum format = channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
@@ -283,6 +286,17 @@ static VALUE oa_thread_loop(void *id_self)
 
     alSourceQueueBuffers(source, 1, &buffer);
     OA_CHECK_ERRORS("queue a buffer");
+
+    VALUE playing = rb_ivar_get(self, oa_iv_playing);
+    ALint state;
+    alGetSourcei(source, AL_SOURCE_STATE, &state);
+    OA_CHECK_ERRORS("AL_SOURCE_STATE");
+
+    if (RTEST(playing) && state != AL_PLAYING)
+    {
+      alSourcePlay(source);
+      OA_CHECK_ERRORS("alSourcePlay (forced continue)");
+    }
   }
 
   return Qtrue;
@@ -305,11 +319,12 @@ void Init_openal_ext(void)
   VALUE mHallon = rb_const_get(rb_cObject, rb_intern("Hallon"));
   VALUE cOpenAL = rb_define_class_under(mHallon, "OpenAL", rb_cObject);
 
-  oa_iv_block  = rb_intern("@block");
-  oa_iv_format = rb_intern("@format");
-  oa_iv_thread = rb_intern("@thread");
-  oa_id_call   = rb_intern("call");
-  oa_id_kill   = rb_intern("kill");
+  oa_iv_block   = rb_intern("@block");
+  oa_iv_format  = rb_intern("@format");
+  oa_iv_thread  = rb_intern("@thread");
+  oa_iv_playing = rb_intern("@playing");
+  oa_id_call    = rb_intern("call");
+  oa_id_kill    = rb_intern("kill");
   oa_id_kill_thread = rb_intern("kill_thread");
   oa_id_spawn_thread = rb_intern("spawn_thread");
 
