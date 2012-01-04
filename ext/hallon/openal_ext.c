@@ -189,113 +189,100 @@ static VALUE oa_kill_thread(VALUE self)
   return self;
 }
 
-// ruby threading gooey stuff
-typedef struct
+static ALuint find_empty_buffer(VALUE self)
 {
-  ALuint source;
-  int abort;
-  int init;
-} oa_wait_t;
-
-static VALUE wait_for_empty_buffer(void *wait_ptr)
-{
-  oa_wait_t *wait = (oa_wait_t*)wait_ptr;
-  int processed = 0;
   ALuint empty_buffer;
 
-  while ( ! wait->abort && processed == 0)
+  oa_struct_t *data_ptr = oa_struct(self);
+  ALuint source   = data_ptr->source;
+  ALuint *buffers = data_ptr->buffers;
+
+  ALint num_queued = 0;
+  alGetSourcei(source, AL_BUFFERS_QUEUED, &num_queued);
+  OA_CHECK_ERRORS("AL_BUFFERS_QUEUED");
+
+  if (num_queued < NUM_BUFFERS)
   {
-    alGetSourcei(wait->source, AL_BUFFERS_PROCESSED, &processed);
-    usleep(100);
+    empty_buffer = buffers[num_queued];
+  }
+  else
+  {
+    ALint state;
+    int processed;
+    struct timeval poll_time;
+    poll_time.tv_sec  = 0;
+    poll_time.tv_usec = 100;	/* 0.000100 sec */
+
+    for (processed = 0; processed == 0; rb_thread_wait_for(poll_time))
+    {
+      alGetSourcei(source, AL_SOURCE_STATE, &state);
+      OA_CHECK_ERRORS("AL_SOURCE_STATE");
+
+      if (state != AL_PLAYING) continue;
+
+      alGetSourcei(source, AL_BUFFERS_PROCESSED, &processed);
+      OA_CHECK_ERRORS("AL_BUFFERS_PROCESSED");
+    }
+
+    alSourceUnqueueBuffers(source, 1, &empty_buffer);
+    OA_CHECK_ERRORS("alSourceUnqueueBuffers");
   }
 
-   alSourceUnqueueBuffers(wait->source, 1, &empty_buffer);
-   return (VALUE)empty_buffer;
-}
-
-static void abort_wait_for_empty_buffer(void *wait_ptr)
-{
-  oa_wait_t *wait = (oa_wait_t*)wait_ptr;
-  wait->abort = 1;
+  return empty_buffer;
 }
 
 static VALUE oa_thread_loop(void *id_self)
 {
   const int max_frames_per_buffer = 22000;
-  VALUE self     = (VALUE)id_self;
-  ALuint buffer  = Qnil;
-  int num_queued = 0;
+  VALUE self = (VALUE)id_self;
+  ALuint source = oa_struct(self)->source;
 
-  oa_struct_t *data_ptr = oa_struct(self);
-
-  oa_wait_t wait =
+  for (;;)
   {
-    .source = data_ptr->source,
-    .abort  = 0,
-  };
+    ALuint buffer = find_empty_buffer(self);
+    OA_CHECK_ERRORS("find_empty_buffer");
 
-  while ( ! wait.abort)
-  {
-    alGetSourcei(wait.source, AL_BUFFERS_QUEUED, &num_queued);
+    // pull some audio out of hallon
+    VALUE frames = oa_get_audio(self, max_frames_per_buffer);
 
-    // in the start, for example, we won’t have queued any buffers
-    // so we need to do that before we can wait for an empty buffer
-    if (num_queued != NUM_BUFFERS)
+    // read the format
+    int channels    = 2;
+    int sample_rate = 44100;
+    int format_size = sizeof(short);
+
+    // convert the frames from ruby to C
+    int max_samples = max_frames_per_buffer * channels;
+    signed short samples[max_samples];
+    long num_samples = RARRAY_LEN(frames) * channels;
+
+    VALUE frame, sample;
+    int i, rb_i, rb_j;
+    for (i = 0; i < num_samples; ++i)
     {
-      printf("num queued: %d\n", num_queued);
-      buffer = data_ptr->buffers[num_queued];
+      rb_i = i / channels; // integer division
+      rb_j = i % channels;
+
+      frame  = RARRAY_PTR(frames)[rb_i];
+      sample = RARRAY_PTR(frame)[rb_j];
+
+      long value = FIX2LONG(sample);
+
+      samples[i] = (short) value; // shorts are 16 bits
     }
-    else
-    {
-      buffer = (ALuint) rb_thread_blocking_region(wait_for_empty_buffer, &wait, abort_wait_for_empty_buffer, &wait);
-    }
 
-    if ( ! wait.abort)
-    {
-      // check for errors, just to be safe
-      OA_CHECK_ERRORS("paranoia");
+    printf("%d +%ld\n", buffer, num_samples);
 
-      // read the format
-      int channels    = 2;
-      int sample_rate = 44100;
-      int format_size = sizeof(short);
+    // pucker up all the params
+    ALenum format = channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
+    ALsizei size  = sizeof(short) * num_samples;
+    ALsizei freq  = sample_rate;
 
-      // pull 22,000 frames from Hallon; each frame is an array
-      // of `channels` items, OpenAL wants it as a single array
-      int max_samples = max_frames_per_buffer * channels;
-      signed short samples[max_samples];
-      VALUE frames = oa_get_audio(self, max_frames_per_buffer);
-      long num_samples = RARRAY_LEN(frames) * channels;
+    // queue the data!
+    alBufferData(buffer, format, samples, size, sample_rate);
+    OA_CHECK_ERRORS("buffer data");
 
-      VALUE frame, sample;
-      int i, rb_i, rb_j;
-      for (i = 0; i < num_samples; ++i)
-      {
-        rb_i = i / channels; // integer division
-        rb_j = i % channels;
-
-        frame  = RARRAY_PTR(frames)[rb_i];
-        sample = RARRAY_PTR(frame)[rb_j];
-
-        long value = FIX2LONG(sample);
-
-        samples[i] = (short) value; // shorts are 16 bits
-      }
-
-      printf("buffered: %ld", num_samples);
-
-      // pucker up all the params
-      ALenum format = channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
-      ALsizei size  = sizeof(short) * num_samples;
-      ALsizei freq  = sample_rate;
-
-      // queue the data!
-      alBufferData(buffer, format, samples, size, sample_rate);
-      OA_CHECK_ERRORS("buffer data");
-
-      alSourceQueueBuffers(wait.source, 1, &buffer);
-      OA_CHECK_ERRORS("queue a buffer");
-    }
+    alSourceQueueBuffers(source, 1, &buffer);
+    OA_CHECK_ERRORS("queue a buffer");
   }
 
   return Qtrue;
