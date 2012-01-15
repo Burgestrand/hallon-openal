@@ -1,3 +1,6 @@
+#define HAVE_STRUCT_TIMESPEC
+#define HAVE_STRUCT_TIMEZONE
+
 #include <ruby.h>
 #include <OpenAL/alc.h>
 #include <OpenAL/al.h>
@@ -13,14 +16,9 @@
 #define NUM_BUFFERS 3
 
 // Globals
-ID oa_iv_block;
 ID oa_iv_format;
-ID oa_iv_thread;
 ID oa_iv_playing;
 ID oa_id_call;
-ID oa_id_kill;
-ID oa_id_kill_thread;
-ID oa_id_spawn_thread;
 
 // struct information stored
 // with the OpenAL driver instance
@@ -49,10 +47,20 @@ static inline oa_struct_t* oa_struct(VALUE self)
   return data_ptr;
 }
 
-static inline VALUE oa_get_audio(VALUE self, int frames)
+static inline void oa_ensure_playing(VALUE self)
 {
-  VALUE block   = rb_ivar_get(self, oa_iv_block);
-  return rb_funcall(block, oa_id_call, 1, INT2FIX(frames));
+  ALint state;
+  ALuint source = oa_struct(self)->source;
+  VALUE playing = rb_ivar_get(self, oa_iv_playing);
+
+  alGetSourcei(source, AL_SOURCE_STATE, &state);
+  OA_CHECK_ERRORS("AL_SOURCE_STATE");
+
+  if (RTEST(playing) && state != AL_PLAYING)
+  {
+    alSourcePlay(source);
+    OA_CHECK_ERRORS("alSourcePlay (forced continue)");
+  }
 }
 
 // implementation
@@ -92,24 +100,15 @@ static VALUE oa_allocate(VALUE klass)
   return Data_Make_Struct(klass, oa_struct_t, NULL, oa_free, data_ptr);
 }
 
-static VALUE oa_initialize(int argc, VALUE *argv, VALUE self)
+static VALUE oa_initialize(VALUE self, VALUE format)
 {
-  VALUE format, block;
   oa_struct_t *data_ptr;
   ALenum error = AL_NO_ERROR;
 
-  rb_scan_args(argc, argv, "1&", &format, &block);
+  // set our format :d
+  rb_ivar_set(self, oa_iv_format, format);
 
-  // make sure we got the block argument
-  if ( ! RTEST(block))
-  {
-    rb_raise(rb_eArgError, "missing block argument");
-  }
-
-  // we received a proc that we can call to
-  // receive audio frames; so we store it
-  rb_ivar_set(self, oa_iv_block, block);
-
+  // initialize openal
   Data_Get_Struct(self, oa_struct_t, data_ptr);
 
   data_ptr->device = alcOpenDevice(NULL);
@@ -142,9 +141,6 @@ static VALUE oa_initialize(int argc, VALUE *argv, VALUE self)
   // generate our source
 	alGenSources(1, &data_ptr->source);
   OA_CHECK_ERRORS("gen sources");
-
-  // spawn thread
-  rb_funcall(self, oa_id_spawn_thread, 0);
 }
 
 static VALUE oa_start(VALUE self)
@@ -156,9 +152,17 @@ static VALUE oa_start(VALUE self)
 
 static VALUE oa_stop(VALUE self)
 {
+  ALuint source = oa_struct(self)->source;
   rb_ivar_set(self, oa_iv_playing, Qfalse);
-  alSourceStop(oa_struct(self)->source);
+
+  // remove all buffers from the source
+  alSourcei(source, AL_BUFFER, 0);
   OA_CHECK_ERRORS("stop!");
+
+  // and stop the source
+  alSourceStop(source);
+  OA_CHECK_ERRORS("stop!");
+
   return self;
 }
 
@@ -184,18 +188,6 @@ static VALUE oa_set_format(VALUE self, VALUE format)
 static VALUE oa_get_format(VALUE self)
 {
   return rb_ivar_get(self, oa_iv_format);
-}
-
-static VALUE oa_kill_thread(VALUE self)
-{
-  VALUE old_thread = rb_ivar_get(self, oa_iv_thread);
-
-  if (RTEST(old_thread))
-  {
-    rb_funcall(old_thread, oa_id_kill, 0);
-  }
-
-  return self;
 }
 
 static ALuint find_empty_buffer(VALUE self)
@@ -234,10 +226,9 @@ static ALuint find_empty_buffer(VALUE self)
   return empty_buffer;
 }
 
-static VALUE oa_thread_loop(void *id_self)
+static VALUE oa_stream(VALUE self)
 {
   const int max_frames_per_buffer = 22000;
-  VALUE self = (VALUE)id_self;
   ALuint source = oa_struct(self)->source;
 
   for (;;)
@@ -246,7 +237,7 @@ static VALUE oa_thread_loop(void *id_self)
     OA_CHECK_ERRORS("find_empty_buffer");
 
     // pull some audio out of hallon
-    VALUE frames = oa_get_audio(self, max_frames_per_buffer);
+    VALUE frames = rb_yield(INT2FIX(max_frames_per_buffer));
 
     // read the format
     int channels    = 2;
@@ -287,59 +278,34 @@ static VALUE oa_thread_loop(void *id_self)
     alSourceQueueBuffers(source, 1, &buffer);
     OA_CHECK_ERRORS("queue a buffer");
 
-    VALUE playing = rb_ivar_get(self, oa_iv_playing);
-    ALint state;
-    alGetSourcei(source, AL_SOURCE_STATE, &state);
-    OA_CHECK_ERRORS("AL_SOURCE_STATE");
-
-    if (RTEST(playing) && state != AL_PLAYING)
-    {
-      alSourcePlay(source);
-      OA_CHECK_ERRORS("alSourcePlay (forced continue)");
-    }
+    // OpenAL transitions to :stopped state if we cannot
+    // keep buffers properly feeded — but we want it to
+    // play as soon as it can if we’re playing, so fix it
+    oa_ensure_playing(self);
   }
 
   return Qtrue;
 }
-
-static VALUE oa_spawn_thread(VALUE self)
-{
-  // kill of any possible existing thread
-  oa_kill_thread(self);
-
-  VALUE thread = rb_thread_create(oa_thread_loop, (void *)self);
-  rb_ivar_set(self, oa_iv_thread, thread);
-
-  return self;
-}
-
 
 void Init_openal_ext(void)
 {
   VALUE mHallon = rb_const_get(rb_cObject, rb_intern("Hallon"));
   VALUE cOpenAL = rb_define_class_under(mHallon, "OpenAL", rb_cObject);
 
-  oa_iv_block   = rb_intern("@block");
   oa_iv_format  = rb_intern("@format");
-  oa_iv_thread  = rb_intern("@thread");
   oa_iv_playing = rb_intern("@playing");
   oa_id_call    = rb_intern("call");
-  oa_id_kill    = rb_intern("kill");
-  oa_id_kill_thread = rb_intern("kill_thread");
-  oa_id_spawn_thread = rb_intern("spawn_thread");
 
   rb_define_alloc_func(cOpenAL, oa_allocate);
-  rb_define_method(cOpenAL, "initialize", oa_initialize, -1);
+  rb_define_method(cOpenAL, "initialize", oa_initialize, 1);
 
   rb_define_method(cOpenAL, "start", oa_start, 0);
   rb_define_method(cOpenAL, "stop", oa_stop, 0);
   rb_define_method(cOpenAL, "pause", oa_pause, 0);
+  rb_define_method(cOpenAL, "stream", oa_stream, 0);
 
   rb_define_method(cOpenAL, "drops", oa_drops, 0);
 
   rb_define_method(cOpenAL, "format=", oa_set_format, 1);
   rb_define_method(cOpenAL, "format", oa_get_format, 0);
-
-  rb_define_private_method(cOpenAL, "spawn_thread", oa_spawn_thread, 0);
-  rb_define_private_method(cOpenAL, "kill_thread", oa_kill_thread, 0);
 }
