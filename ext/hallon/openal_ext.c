@@ -1,6 +1,3 @@
-#define HAVE_STRUCT_TIMESPEC
-#define HAVE_STRUCT_TIMEZONE
-
 #include <ruby.h>
 #include <OpenAL/alc.h>
 #include <OpenAL/al.h>
@@ -19,6 +16,7 @@
 ID oa_iv_format;
 ID oa_iv_playing;
 ID oa_id_call;
+VALUE oa_id_puts;
 
 // struct information stored
 // with the OpenAL driver instance
@@ -61,6 +59,12 @@ static inline void oa_ensure_playing(VALUE self)
     alSourcePlay(source);
     OA_CHECK_ERRORS("alSourcePlay (forced continue)");
   }
+}
+
+static inline void oa_puts(const char *message)
+{
+  VALUE rbmessage = rb_str_new2(message);
+  rb_funcall(rb_cObject, oa_id_puts, rbmessage);
 }
 
 // implementation
@@ -157,7 +161,7 @@ static VALUE oa_stop(VALUE self)
 
   // remove all buffers from the source
   alSourcei(source, AL_BUFFER, 0);
-  OA_CHECK_ERRORS("stop!");
+  OA_CHECK_ERRORS("remove buffers!");
 
   // and stop the source
   alSourceStop(source);
@@ -181,9 +185,11 @@ static VALUE oa_drops(VALUE self)
 
 static VALUE oa_set_format(VALUE self, VALUE format)
 {
-  // rb_raise(rb_eNotImpError, "#format= is not yet implemented");
+  rb_eval_string("puts '[WARN] Hallon::OpenAL#format= does nothing'");
+  rb_ivar_set(self, oa_iv_format, format);
   return format;
 }
+
 
 static VALUE oa_get_format(VALUE self)
 {
@@ -295,6 +301,7 @@ void Init_openal_ext(void)
   oa_iv_format  = rb_intern("@format");
   oa_iv_playing = rb_intern("@playing");
   oa_id_call    = rb_intern("call");
+  oa_id_puts    = rb_intern("puts");
 
   rb_define_alloc_func(cOpenAL, oa_allocate);
   rb_define_method(cOpenAL, "initialize", oa_initialize, 1);
