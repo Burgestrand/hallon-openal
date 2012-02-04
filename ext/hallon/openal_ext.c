@@ -169,7 +169,7 @@ static VALUE oa_initialize(VALUE self, VALUE format)
   OA_CHECK_ERRORS("gen sources");
 }
 
-static VALUE oa_start(VALUE self)
+static VALUE oa_play(VALUE self)
 {
   rb_ivar_set(self, oa_iv_playing, Qtrue);
   alSourcePlay(oa_struct(self)->source);
@@ -365,7 +365,7 @@ void Init_openal_ext(void)
   rb_define_alloc_func(cOpenAL, oa_allocate);
   rb_define_method(cOpenAL, "initialize", oa_initialize, 1);
 
-  rb_define_method(cOpenAL, "start", oa_start, 0);
+  rb_define_method(cOpenAL, "play", oa_play, 0);
   rb_define_method(cOpenAL, "stop", oa_stop, 0);
   rb_define_method(cOpenAL, "pause", oa_pause, 0);
   rb_define_method(cOpenAL, "stream", oa_stream, 0);
