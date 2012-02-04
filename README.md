@@ -14,4 +14,4 @@ I’d be happy to discuss any and all of these with you. Feel free to [create an
 
 ## License
 
-X11 license. See LICENSE.txt for details.
+2-clause (simplified) BSD license. See LICENSE.txt for details.
