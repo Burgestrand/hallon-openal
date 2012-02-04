@@ -13,13 +13,13 @@
 #define NUM_BUFFERS 3
 
 // Globals
-ID oa_iv_format;
 ID oa_iv_playing;
+ID oa_iv_format;
 ID oa_id_call;
 ID oa_id_puts;
 VALUE oa_key_channels;
 VALUE oa_key_rate;
-VALUE oa_key_size;
+VALUE oa_key_type;
 
 // struct information stored
 // with the OpenAL driver instance
@@ -33,6 +33,7 @@ typedef struct
 
 // Utility
 
+#define SYM2STR(x) rb_id2name(SYM2ID((x)))
 #define STR2SYM(x) ID2SYM(rb_intern((x)))
 
 #define OA_CHECK_ERRORS(msg) do {                           \
@@ -72,21 +73,24 @@ static inline void oa_puts(const char *message)
   rb_funcall(rb_cObject, oa_id_puts, 1, rbmessage);
 }
 
-// private methods
+static VALUE oa_format_get(VALUE self);
 
 static inline int _oa_format_channels(VALUE self)
 {
-  return 2;
+  VALUE channels = rb_hash_aref(oa_format_get(self), oa_key_channels);
+  return FIX2INT(channels);
 }
 
 static inline int _oa_format_rate(VALUE self)
 {
-  return 44100;
+  VALUE rate = rb_hash_aref(oa_format_get(self), oa_key_rate);
+  return FIX2LONG(rate);
 }
 
-static inline int _oa_format_size(VALUE self)
+static inline VALUE _oa_format_type(VALUE self)
 {
-  return sizeof(short);
+  VALUE size = rb_hash_aref(oa_format_get(self), oa_key_type);
+  return size;
 }
 
 // implementation
@@ -126,13 +130,10 @@ static VALUE oa_allocate(VALUE klass)
   return Data_Make_Struct(klass, oa_struct_t, NULL, oa_free, data_ptr);
 }
 
-static VALUE oa_initialize(VALUE self, VALUE format)
+static VALUE oa_initialize(VALUE self)
 {
   oa_struct_t *data_ptr;
   ALenum error = AL_NO_ERROR;
-
-  // set our format :d
-  rb_ivar_set(self, oa_iv_format, format);
 
   // initialize openal
   Data_Get_Struct(self, oa_struct_t, data_ptr);
@@ -205,19 +206,6 @@ static VALUE oa_drops(VALUE self)
   return INT2NUM(0);
 }
 
-static VALUE oa_set_format(VALUE self, VALUE format)
-{
-  rb_eval_string("puts '[WARN] Hallon::OpenAL#format= does nothing'");
-  rb_ivar_set(self, oa_iv_format, format);
-  return format;
-}
-
-
-static VALUE oa_get_format(VALUE self)
-{
-  return rb_ivar_get(self, oa_iv_format);
-}
-
 static ALuint find_empty_buffer(VALUE self)
 {
   ALuint empty_buffer;
@@ -254,8 +242,20 @@ static ALuint find_empty_buffer(VALUE self)
   return empty_buffer;
 }
 
+static VALUE oa_format_get(VALUE self)
+{
+  return rb_ivar_get(self, oa_iv_format);
+}
+
+static VALUE oa_format_set(VALUE self, VALUE format)
+{
+  rb_ivar_set(self, oa_iv_format, format);
+  return format;
+}
+
 static VALUE oa_stream(VALUE self)
 {
+  VALUE int16ne = STR2SYM("int16");
   ALuint source = oa_struct(self)->source;
   signed short *sample_ary = NULL;
 
@@ -271,25 +271,26 @@ static VALUE oa_stream(VALUE self)
 
     // read the format (it never changes in the inner loop)
     int f_channels = _oa_format_channels(self);
-    int f_rate = _oa_format_rate(self);
-    int f_size = _oa_format_size(self);
+    int f_rate     = _oa_format_rate(self);
+    VALUE f_type   = _oa_format_type(self);
+    size_t f_size  = 0;
+
+    DEBUG("%d channels %d rate", f_channels, f_rate);
 
     // each time we buffer down there, it’ll be for about .5s of audio each time
-    int sample_ary_frames = _oa_format_rate(self) / 2;
-    int sample_ary_length = sample_ary_frames * _oa_format_channels(self); // integer division
+    int sample_ary_frames = f_rate / 2;
+    int sample_ary_length = sample_ary_frames * f_channels; // integer division
     xfree(sample_ary); // ruby handles NULL pointer too
 
-    switch (_oa_format_size(self))
+    if (rb_eql(f_type, int16ne))
     {
-      // INT16NE
-      case sizeof(short):
-        sample_ary = ALLOCA_N(short, sample_ary_length);
-        break;
-
-      default:
-        printf("Hallon::OpenAL#stream -> cannot handle format size %d!", _oa_format_size(self));
-        rb_notimplement();
-        break;
+      sample_ary = ALLOCA_N(short, sample_ary_length);
+      f_size     = sizeof(short);
+    }
+    else
+    {
+      printf("Hallon::OpenAL#stream -> cannot handle format size %s!", SYM2STR(f_type));
+      rb_notimplement();
     }
 
     for (;;)
@@ -325,7 +326,7 @@ static VALUE oa_stream(VALUE self)
         sample_ary[i] = (short) value;
       }
 
-      DEBUG("%d +%ld\n", buffer, num_current_samples);
+      DEBUG("%d +%d\n", buffer, num_current_samples);
 
       // pucker up all the params
       ALenum type  = f_channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
@@ -354,24 +355,23 @@ void Init_openal_ext(void)
   VALUE mHallon = rb_const_get(rb_cObject, rb_intern("Hallon"));
   VALUE cOpenAL = rb_define_class_under(mHallon, "OpenAL", rb_cObject);
 
-  oa_iv_format  = rb_intern("@format");
   oa_iv_playing = rb_intern("@playing");
   oa_id_call    = rb_intern("call");
   oa_id_puts    = rb_intern("puts");
+  oa_iv_format  = rb_intern("format");
   oa_key_channels = STR2SYM("channels");
   oa_key_rate     = STR2SYM("rate");
-  oa_key_size     = STR2SYM("size");
+  oa_key_type     = STR2SYM("type");
 
   rb_define_alloc_func(cOpenAL, oa_allocate);
-  rb_define_method(cOpenAL, "initialize", oa_initialize, 1);
 
+  rb_define_method(cOpenAL, "initialize", oa_initialize, 0);
   rb_define_method(cOpenAL, "play", oa_play, 0);
   rb_define_method(cOpenAL, "stop", oa_stop, 0);
   rb_define_method(cOpenAL, "pause", oa_pause, 0);
   rb_define_method(cOpenAL, "stream", oa_stream, 0);
+  rb_define_method(cOpenAL, "format=", oa_format_set, 1);
+  rb_define_method(cOpenAL, "format", oa_format_get, 0);
 
   rb_define_method(cOpenAL, "drops", oa_drops, 0);
-
-  rb_define_method(cOpenAL, "format=", oa_set_format, 1);
-  rb_define_method(cOpenAL, "format", oa_get_format, 0);
 }
