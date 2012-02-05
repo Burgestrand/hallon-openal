@@ -1,7 +1,13 @@
 #include <ruby.h>
-#include <OpenAL/alc.h>
-#include <OpenAL/al.h>
 #include <unistd.h>
+
+#ifdef HAVE_AL_ALC_H
+#  include <AL/alc.h>
+#  include <AL/al.h>
+#elif HAVE_OPENAL_ALC_H
+#  include <OpenAL/alc.h>
+#  include <OpenAL/al.h>
+#endif
 
 #if DEBUG_H
 #  define DEBUG printf
