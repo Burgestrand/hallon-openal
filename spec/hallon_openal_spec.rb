@@ -4,17 +4,11 @@ require 'hallon/openal'
 describe Hallon::OpenAL do
   let(:klass)  { described_class }
   let(:format) { Hash.new }
-  subject { klass.new(format) }
+  subject { klass.new }
 
-  describe "#initialize" do
-    it "should raise an error if not given a format" do
-      expect { klass.new {} }.to raise_error(ArgumentError)
-    end
-  end
-
-  describe "#start" do
+  describe "#play" do
     it "should not raise an error" do
-      expect { subject.start }.to_not raise_error
+      expect { subject.play }.to_not raise_error
     end
   end
 
@@ -38,9 +32,7 @@ describe Hallon::OpenAL do
 
   describe "#format" do
     it "should be settable and gettable" do
-      format = { channels: 1, rate: 44100 }
-
-      subject.format.should == {}
+      subject.format.should be_nil
       subject.format = format
       subject.format.should eq format
     end
