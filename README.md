@@ -3,6 +3,8 @@
 This gem supplies Hallon with the ability to stream audio through your
 speakers using OpenAL.
 
+As far as API goes it follows the [Hallon audio driver protocol](http://rubydoc.info/github/Burgestrand/Hallon/Hallon/ExampleAudioDriver).
+
 ## Installation
 
     gem install hallon-openal
