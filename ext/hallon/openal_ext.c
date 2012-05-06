@@ -90,7 +90,7 @@ static inline int _oa_format_channels(VALUE self)
 static inline int _oa_format_rate(VALUE self)
 {
   VALUE rate = rb_hash_aref(oa_format_get(self), oa_key_rate);
-  return FIX2LONG(rate);
+  return FIX2INT(rate);
 }
 
 static inline VALUE _oa_format_type(VALUE self)
@@ -336,7 +336,7 @@ static VALUE oa_stream(VALUE self)
 
       // pucker up all the params
       ALenum type  = f_channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
-      ALsizei size = f_size * num_current_samples;
+      ALsizei size = (ALsizei) f_size * num_current_samples;
       ALsizei freq = f_rate;
 
       // queue the data!
