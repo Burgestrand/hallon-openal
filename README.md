@@ -11,8 +11,9 @@ As far as API goes it follows the [Hallon audio driver protocol](http://rubydoc.
 
 ## Issues? Bugs? Feedback?
 
-I’d be happy to discuss any and all of these with you. Feel free to [create an issue](https://github.com/Burgestrand/hallon-openal/issues),
-[email me](http://github.com/Burgestrand) or [tweet me at @Burgestrand](http://twitter.com/Burgestrand).
+- __Got questions?__ Ask on the mailing list: <mailto:ruby-hallon@googlegroups.com> (<https://groups.google.com/d/forum/ruby-hallon>)
+- __Found a bug?__ Report an issue: <https://github.com/Burgestrand/hallon-openal/issues/new>
+- __Have feedback?__ I ❤ feedback! Please send it to the mailing list.
 
 ## License
 
