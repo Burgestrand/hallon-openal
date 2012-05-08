@@ -4,7 +4,7 @@
 #ifdef HAVE_AL_ALC_H
 #  include <AL/alc.h>
 #  include <AL/al.h>
-#elif HAVE_OPENAL_ALC_H
+#else
 #  include <OpenAL/alc.h>
 #  include <OpenAL/al.h>
 #endif
@@ -188,13 +188,13 @@ static VALUE oa_stop(VALUE self)
   ALuint source = oa_struct(self)->source;
   rb_ivar_set(self, oa_iv_playing, Qfalse);
 
-  // remove all buffers from the source
-  alSourcei(source, AL_BUFFER, 0);
-  OA_CHECK_ERRORS("remove buffers!");
-
   // and stop the source
   alSourceStop(source);
   OA_CHECK_ERRORS("stop!");
+
+  // remove all buffers from the source
+  alSourcei(source, AL_BUFFER, 0);
+  OA_CHECK_ERRORS("remove buffers!");
 
   return self;
 }
@@ -267,13 +267,13 @@ static VALUE oa_stream(VALUE self)
 
   for (;;)
   {
-    // make sure we have no preattached buffers
-    alSourcei(source, AL_BUFFER, 0);
-    OA_CHECK_ERRORS("detach all buffers from the source");
-
     // make sure we’re not playing audio
     alSourceStop(source);
     OA_CHECK_ERRORS("reset driver");
+
+    // make sure we have no preattached buffers
+    alSourcei(source, AL_BUFFER, 0);
+    OA_CHECK_ERRORS("detach all buffers from the source");
 
     // read the format (it never changes in the inner loop)
     int f_channels = _oa_format_channels(self);
