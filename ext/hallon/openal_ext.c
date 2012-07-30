@@ -20,7 +20,6 @@
 
 // Globals
 ID oa_iv_playing;
-ID oa_iv_format;
 ID oa_id_call;
 ID oa_id_puts;
 VALUE oa_key_channels;
@@ -42,6 +41,8 @@ typedef struct
 #define SYM2STR(x) rb_id2name(SYM2ID((x)))
 #define STR2SYM(x) ID2SYM(rb_intern((x)))
 
+#define HASH_AREF(hash, key) rb_funcall((hash), rb_intern("fetch"), 1, (key))
+
 #define OA_CHECK_ERRORS(msg) do {                           \
   ALenum _error;                                            \
   if ((_error = alGetError()) != AL_NO_ERROR)               \
@@ -49,6 +50,8 @@ typedef struct
     rb_raise(rb_eRuntimeError, "OpenAL error: %u (%s)", _error, (msg)); \
   }                                                         \
 } while(0)
+
+#define OA_DO(msg, code) do { code; OA_CHECK_ERRORS(msg); } while(0)
 
 static inline oa_struct_t* oa_struct(VALUE self)
 {
@@ -63,13 +66,15 @@ static inline void oa_ensure_playing(VALUE self)
   ALuint source = oa_struct(self)->source;
   VALUE playing = rb_ivar_get(self, oa_iv_playing);
 
-  alGetSourcei(source, AL_SOURCE_STATE, &state);
-  OA_CHECK_ERRORS("AL_SOURCE_STATE");
+  OA_DO("AL_SOURCE_STATE", {
+    alGetSourcei(source, AL_SOURCE_STATE, &state);
+  });
 
   if (RTEST(playing) && state != AL_PLAYING)
   {
-    alSourcePlay(source);
-    OA_CHECK_ERRORS("alSourcePlay (forced continue)");
+    OA_DO("alSourcePlay (forced continue)", {
+      alSourcePlay(source);
+    });
   }
 }
 
@@ -79,24 +84,24 @@ static inline void oa_puts(const char *message)
   rb_funcall(rb_cObject, oa_id_puts, 1, rbmessage);
 }
 
-static VALUE oa_format_get(VALUE self);
+static VALUE oa_format_get(VALUE self)
+{
+  rb_funcall(self, rb_intern("format"), 0);
+}
 
 static inline int _oa_format_channels(VALUE self)
 {
-  VALUE channels = rb_hash_aref(oa_format_get(self), oa_key_channels);
-  return FIX2INT(channels);
+  return FIX2INT(HASH_AREF(oa_format_get(self), STR2SYM("channels")));
 }
 
 static inline int _oa_format_rate(VALUE self)
 {
-  VALUE rate = rb_hash_aref(oa_format_get(self), oa_key_rate);
-  return FIX2INT(rate);
+  return FIX2INT(HASH_AREF(oa_format_get(self), STR2SYM("rate")));
 }
 
 static inline VALUE _oa_format_type(VALUE self)
 {
-  VALUE size = rb_hash_aref(oa_format_get(self), oa_key_type);
-  return size;
+  return HASH_AREF(oa_format_get(self), STR2SYM("type"));
 }
 
 // implementation
@@ -136,7 +141,7 @@ static VALUE oa_allocate(VALUE klass)
   return Data_Make_Struct(klass, oa_struct_t, NULL, oa_free, data_ptr);
 }
 
-static VALUE oa_initialize(VALUE self)
+static VALUE oa_initialize(VALUE self, VALUE format)
 {
   oa_struct_t *data_ptr;
   ALenum error = AL_NO_ERROR;
@@ -174,6 +179,9 @@ static VALUE oa_initialize(VALUE self)
   // generate our source
 	alGenSources(1, &data_ptr->source);
   OA_CHECK_ERRORS("gen sources");
+
+  // call super, to start the streamer thread
+  rb_call_super(1, &format);
 }
 
 static VALUE oa_play(VALUE self)
@@ -191,6 +199,10 @@ static VALUE oa_stop(VALUE self)
   // and stop the source
   alSourceStop(source);
   OA_CHECK_ERRORS("stop!");
+
+  // rewind our source if we had any previous data
+  alSourceRewind(source);
+  OA_CHECK_ERRORS("rewind!");
 
   // remove all buffers from the source
   alSourcei(source, AL_BUFFER, 0);
@@ -248,109 +260,95 @@ static ALuint find_empty_buffer(VALUE self)
   return empty_buffer;
 }
 
-static VALUE oa_format_get(VALUE self)
-{
-  return rb_ivar_get(self, oa_iv_format);
-}
-
-static VALUE oa_format_set(VALUE self, VALUE format)
-{
-  rb_ivar_set(self, oa_iv_format, format);
-  return format;
-}
-
 static VALUE oa_stream(VALUE self)
 {
   VALUE int16ne = STR2SYM("int16");
   ALuint source = oa_struct(self)->source;
   signed short *sample_ary = NULL;
 
+  // make sure we’re not playing audio
+  alSourceStop(source);
+  OA_CHECK_ERRORS("reset driver");
+
+  // make sure we have no preattached buffers
+  alSourcei(source, AL_BUFFER, 0);
+  OA_CHECK_ERRORS("detach all buffers from the source");
+
+  // read the format (it never changes in the inner loop)
+  int f_channels = _oa_format_channels(self);
+  int f_rate     = _oa_format_rate(self);
+  VALUE f_type   = _oa_format_type(self);
+  size_t f_size  = 0;
+
+  DEBUG("%d channels %d rate", f_channels, f_rate);
+
+  // each time we buffer down there, it’ll be for about .5s of audio each time
+  int sample_ary_frames = f_rate / 2;
+  int sample_ary_length = sample_ary_frames * f_channels; // integer division
+  xfree(sample_ary); // ruby handles NULL pointer too
+
+  if (rb_eql(f_type, int16ne))
+  {
+    sample_ary = ALLOCA_N(short, sample_ary_length);
+    f_size     = sizeof(short);
+  }
+  else
+  {
+    printf("Hallon::OpenAL#stream -> cannot handle format size %s!", SYM2STR(f_type));
+    rb_notimplement();
+  }
+
   for (;;)
   {
-    // make sure we’re not playing audio
-    alSourceStop(source);
-    OA_CHECK_ERRORS("reset driver");
+    // pull some audio out of hallon
+    VALUE frames = rb_yield(INT2FIX(sample_ary_frames));
 
-    // make sure we have no preattached buffers
-    alSourcei(source, AL_BUFFER, 0);
-    OA_CHECK_ERRORS("detach all buffers from the source");
-
-    // read the format (it never changes in the inner loop)
-    int f_channels = _oa_format_channels(self);
-    int f_rate     = _oa_format_rate(self);
-    VALUE f_type   = _oa_format_type(self);
-    size_t f_size  = 0;
-
-    DEBUG("%d channels %d rate", f_channels, f_rate);
-
-    // each time we buffer down there, it’ll be for about .5s of audio each time
-    int sample_ary_frames = f_rate / 2;
-    int sample_ary_length = sample_ary_frames * f_channels; // integer division
-    xfree(sample_ary); // ruby handles NULL pointer too
-
-    if (rb_eql(f_type, int16ne))
+    // if we received nil, it means format changed; the new
+    // format is already in @format, so we reinitialize!
+    if ( ! RTEST(frames))
     {
-      sample_ary = ALLOCA_N(short, sample_ary_length);
-      f_size     = sizeof(short);
-    }
-    else
-    {
-      printf("Hallon::OpenAL#stream -> cannot handle format size %s!", SYM2STR(f_type));
-      rb_notimplement();
+      break;
     }
 
-    for (;;)
+    ALuint buffer = find_empty_buffer(self);
+    OA_CHECK_ERRORS("find_empty_buffer");
+
+    // convert the frames from ruby to C
+    int num_current_samples = ((int) RARRAY_LEN(frames)) * f_channels;
+
+    VALUE frame, sample;
+    int i, rb_i, rb_j;
+    for (i = 0; i < num_current_samples; ++i)
     {
-      // pull some audio out of hallon
-      VALUE frames = rb_yield(INT2FIX(sample_ary_frames));
+      rb_i = i / f_channels; // integer division
+      rb_j = i % f_channels;
 
-      // if we received nil, it means format changed; the new
-      // format is already in @format, so we reinitialize!
-      if ( ! RTEST(frames))
-      {
-        break;
-      }
+      frame  = RARRAY_PTR(frames)[rb_i];
+      sample = RARRAY_PTR(frame)[rb_j];
 
-      ALuint buffer = find_empty_buffer(self);
-      OA_CHECK_ERRORS("find_empty_buffer");
+      long value = FIX2LONG(sample);
 
-      // convert the frames from ruby to C
-      int num_current_samples = ((int) RARRAY_LEN(frames)) * f_channels;
-
-      VALUE frame, sample;
-      int i, rb_i, rb_j;
-      for (i = 0; i < num_current_samples; ++i)
-      {
-        rb_i = i / f_channels; // integer division
-        rb_j = i % f_channels;
-
-        frame  = RARRAY_PTR(frames)[rb_i];
-        sample = RARRAY_PTR(frame)[rb_j];
-
-        long value = FIX2LONG(sample);
-
-        sample_ary[i] = (short) value;
-      }
-
-      DEBUG("%d +%d\n", buffer, num_current_samples);
-
-      // pucker up all the params
-      ALenum type  = f_channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
-      ALsizei size = (ALsizei) f_size * num_current_samples;
-      ALsizei freq = f_rate;
-
-      // queue the data!
-      alBufferData(buffer, type, sample_ary, size, freq);
-      OA_CHECK_ERRORS("buffer data");
-
-      alSourceQueueBuffers(source, 1, &buffer);
-      OA_CHECK_ERRORS("queue a buffer");
-
-      // OpenAL transitions to :stopped state if we cannot
-      // keep buffers properly feeded — but we want it to
-      // play as soon as it can if we’re playing, so fix it
-      oa_ensure_playing(self);
+      sample_ary[i] = (short) value;
     }
+
+    DEBUG("%d +%d\n", buffer, num_current_samples);
+
+    // pucker up all the params
+    ALenum type  = f_channels == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
+    ALsizei size = (ALsizei) f_size * num_current_samples;
+    ALsizei freq = f_rate;
+
+    // queue the data!
+    alBufferData(buffer, type, sample_ary, size, freq);
+    OA_CHECK_ERRORS("buffer data");
+
+    alSourceQueueBuffers(source, 1, &buffer);
+    OA_CHECK_ERRORS("queue a buffer");
+
+    // OpenAL transitions to :stopped state if we cannot
+    // keep buffers properly feeded — but we want it to
+    // play as soon as it can if we’re playing, so fix it
+    oa_ensure_playing(self);
   }
 
   return Qtrue;
@@ -360,11 +358,11 @@ void Init_openal_ext(void)
 {
   VALUE mHallon = rb_const_get(rb_cObject, rb_intern("Hallon"));
   VALUE cOpenAL = rb_define_class_under(mHallon, "OpenAL", rb_cObject);
+  rb_include_module(cOpenAL, rb_const_get(mHallon, rb_intern("AudioDriver")));
 
   oa_iv_playing = rb_intern("@playing");
   oa_id_call    = rb_intern("call");
   oa_id_puts    = rb_intern("puts");
-  oa_iv_format  = rb_intern("format");
   oa_key_channels = STR2SYM("channels");
   oa_key_rate     = STR2SYM("rate");
   oa_key_type     = STR2SYM("type");
@@ -376,8 +374,6 @@ void Init_openal_ext(void)
   rb_define_method(cOpenAL, "stop", oa_stop, 0);
   rb_define_method(cOpenAL, "pause", oa_pause, 0);
   rb_define_method(cOpenAL, "stream", oa_stream, 0);
-  rb_define_method(cOpenAL, "format=", oa_format_set, 1);
-  rb_define_method(cOpenAL, "format", oa_format_get, 0);
 
   rb_define_method(cOpenAL, "drops", oa_drops, 0);
 }
