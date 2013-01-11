@@ -103,8 +103,6 @@ static inline VALUE _oa_format_type(VALUE self)
 
 static void oa_free(oa_struct_t *data_ptr)
 {
-  int i;
-
   // exit early if we have no data_ptr at all
   if ( ! data_ptr) return;
 
@@ -139,7 +137,6 @@ static VALUE oa_allocate(VALUE klass)
 static VALUE oa_initialize(VALUE self)
 {
   oa_struct_t *data_ptr;
-  ALenum error = AL_NO_ERROR;
 
   // initialize openal
   Data_Get_Struct(self, oa_struct_t, data_ptr);
@@ -174,6 +171,8 @@ static VALUE oa_initialize(VALUE self)
   // generate our source
 	alGenSources(1, &data_ptr->source);
   OA_CHECK_ERRORS("gen sources");
+
+  return self;
 }
 
 static VALUE oa_play(VALUE self)
@@ -220,29 +219,48 @@ static ALuint find_empty_buffer(VALUE self)
   ALuint source   = data_ptr->source;
   ALuint *buffers = data_ptr->buffers;
 
-  ALint num_queued = 0;
-  alGetSourcei(source, AL_BUFFERS_QUEUED, &num_queued);
-  OA_CHECK_ERRORS("AL_BUFFERS_QUEUED");
+  struct timeval poll_time;
+  poll_time.tv_sec  = 0;
+  poll_time.tv_usec = 100;	/* 0.000100 sec */
 
-  if (num_queued < NUM_BUFFERS)
+  /* infinite loop until we break */
+  for (;;rb_thread_wait_for(poll_time))
   {
-    empty_buffer = buffers[num_queued];
-  }
-  else
-  {
-    int processed;
-    struct timeval poll_time;
-    poll_time.tv_sec  = 0;
-    poll_time.tv_usec = 100;	/* 0.000100 sec */
+    ALint num_queued = 0;
+    alGetSourcei(source, AL_BUFFERS_QUEUED, &num_queued);
+    OA_CHECK_ERRORS("AL_BUFFERS_QUEUED");
 
-    for (processed = 0; processed == 0; rb_thread_wait_for(poll_time))
+    if (num_queued < NUM_BUFFERS)
     {
-      alGetSourcei(source, AL_BUFFERS_PROCESSED, &processed);
-      OA_CHECK_ERRORS("AL_BUFFERS_PROCESSED");
+      empty_buffer = buffers[num_queued];
+      DEBUG("Q/B: %d/%d\n", num_queued, NUM_BUFFERS);
+      break;
     }
+    else
+    {
+      ALint state;
+      alGetSourcei(source, AL_SOURCE_STATE, &state);
+      OA_CHECK_ERRORS("AL_SOURCE_STATE");
 
-    alSourceUnqueueBuffers(source, 1, &empty_buffer);
-    OA_CHECK_ERRORS("alSourceUnqueueBuffers");
+      /* there is an openal bug that appears to assume
+       * all queued buffers are processed when the source
+       * is not playing */
+      if (state == AL_PLAYING)
+      {
+        int processed = 0;
+
+        alGetSourcei(source, AL_BUFFERS_PROCESSED, &processed);
+        OA_CHECK_ERRORS("AL_BUFFERS_PROCESSED");
+
+        if (processed > 0)
+        {
+          DEBUG("processed: %d\n", processed);
+          alSourceUnqueueBuffers(source, 1, &empty_buffer);
+          OA_CHECK_ERRORS("alSourceUnqueueBuffers");
+          break;
+        }
+      }
+    }
   }
 
   return empty_buffer;
@@ -301,6 +319,9 @@ static VALUE oa_stream(VALUE self)
 
     for (;;)
     {
+      ALuint buffer = find_empty_buffer(self);
+      OA_CHECK_ERRORS("find_empty_buffer");
+
       // pull some audio out of hallon
       VALUE frames = rb_yield(INT2FIX(sample_ary_frames));
 
@@ -310,9 +331,6 @@ static VALUE oa_stream(VALUE self)
       {
         break;
       }
-
-      ALuint buffer = find_empty_buffer(self);
-      OA_CHECK_ERRORS("find_empty_buffer");
 
       // convert the frames from ruby to C
       int num_current_samples = ((int) RARRAY_LEN(frames)) * f_channels;

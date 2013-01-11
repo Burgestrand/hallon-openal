@@ -32,7 +32,7 @@ else
 end
 
 %w[alcOpenDevice alGetError].each do |func|
-  abort "Missing function #{func}" unless have_func(func)
+  error "Missing function #{func}" unless have_func(func)
 end
 
 create_makefile('openal_ext')
